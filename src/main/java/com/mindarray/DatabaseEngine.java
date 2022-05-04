@@ -7,27 +7,53 @@ import io.vertx.core.json.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Base64;
+
+import static com.mindarray.Constant.*;
 
 public class DatabaseEngine extends AbstractVerticle {
     private static final Logger LOGGER = LoggerFactory.getLogger(DatabaseEngine.class);
     @Override
     public void start(Promise<Void> startPromise) throws Exception {
-         var result = verifyDatabase();
-         result.onSuccess(handler ->{
-             LOGGER.info("Initial Check Done for Database");
-         }).onComplete( completeHandler ->{
+        var eventBus = vertx.eventBus();
+       vertx.<JsonObject>executeBlocking( handler ->{
+           var data = verifyDatabase();
+           data.onComplete( databseHandler ->{
+               LOGGER.debug(String.valueOf(data.result()));
+               handler.complete( data.result());
+           });
+       }).onComplete( completeHandler ->{
+           if(completeHandler.result().getString(STATUS).equals(SUCCESSFULL)){
+               LOGGER.info("Initial Check Done for Database");
+               eventBus.<JsonObject>localConsumer(DISCOVERY_DATABASE_CHECK_PING,checkHandler->{
+                   vertx.executeBlocking(blockingHandler ->{
+                             blockingHandler.complete(checkIP(checkHandler.body()));
+                   }).onComplete(checkIPContext ->{
+                       checkHandler.reply(checkIPContext.result());
+                   });
+               });
+               eventBus.<JsonObject>localConsumer(DISCOVERY_DATABASE_ADD_DATA, addHandler ->{
+                   vertx.<JsonObject>executeBlocking(blockingHandler ->{
+                       var result = insertCredentials(addHandler.body());
+                       blockingHandler.complete(result);
+                   }).onComplete( dataCompleteHandler ->{
+                       addHandler.reply(dataCompleteHandler.result());
+                   });
+               });
 
-         });
+           }else{
+               LOGGER.info("Initial Check fail for the Database");
+           }
+       });
+
         startPromise.complete();
     }
-
-
-
     private  Connection connect() {
         Connection connection = null;
         try {
@@ -39,29 +65,29 @@ public class DatabaseEngine extends AbstractVerticle {
         }
         return connection;
     }
-    private JsonObject getCredentials(JsonObject Credential){
+    private JsonObject getCredentials(JsonObject credential){
         var connection = connect(); //To connect with database
         var credentials = new JsonObject();
         try {
             var statement = connection.createStatement();
             statement.execute("use nms");
-            String query = "select poller.Credential_id , poller.IP_address ,poller.Metric_type ,poller.Metric_group,poller.Scheduled_time, poller.Group_status, monitor.username,monitor.password,monitor.port,monitor.community,monitor.version from monitor, poller where monitor.IP_address = poller.Ip_address and monitor.IP_address=\""+Credential.getString("IP_Address")+"\";";
+            String query = "select poller.Credential_id , poller.IP_address ,poller.Metric_type ,poller.Metric_group,poller.Scheduled_time, poller.Group_status, monitor.username,monitor.password,monitor.port,monitor.community,monitor.version from monitor, poller where monitor.IP_address = poller.Ip_address and monitor.IP_address=\""+credential.getString(IP_ADDRESS)+"\";";
             ResultSet resultSet = statement.executeQuery(query);
             while (resultSet.next()){
                 var data = new JsonObject();
-                data.put("IP_Address",resultSet.getString(2));
-                data.put("Metric_Type",resultSet.getString(3));
-                data.put("Metric_Group",resultSet.getString(4));
+                data.put(IP_ADDRESS,resultSet.getString(2));
+                data.put(METRIC_TYPE,resultSet.getString(3));
+                data.put(METRIC_GROUP,resultSet.getString(4));
                 data.put("Scheduled_Time", resultSet.getInt(5));
                 data.put("Group_status",resultSet.getString(6));
-                if(data.getString("Metric_Type").equals("linux") || data.getString("Metric_Type").equals("windows")){
-                    data.put("username",resultSet.getString(7));
-                    data.put("password",resultSet.getString(8));
-                    data.put("Port", resultSet.getInt(9));
+                if(data.getString(METRIC_TYPE).equals("linux") || data.getString(METRIC_TYPE).equals("windows")){
+                    data.put(USERNAME,resultSet.getString(7));
+                    data.put(PASSWORD,resultSet.getString(8));
+                    data.put(PORT, resultSet.getInt(9));
                 }else{
-                    data.put("Port", resultSet.getInt(9));
-                    data.put("community",resultSet.getString(10));
-                    data.put("version", resultSet.getString(11));
+                    data.put(PORT, resultSet.getInt(9));
+                    data.put(COMMUNITY,resultSet.getString(10));
+                    data.put(VERSION, resultSet.getString(11));
                 }
                 credentials.put(resultSet.getString(1),data );
             }
@@ -75,6 +101,60 @@ public class DatabaseEngine extends AbstractVerticle {
             }
         }
         return credentials;
+    }
+    private String generate() {
+        SecureRandom random = new SecureRandom();
+        Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+        byte[] buffer = new byte[20];
+        random.nextBytes(buffer);
+        return encoder.encodeToString(buffer);
+    }
+    private JsonObject insertCredentials(JsonObject credential){
+        var error = new ArrayList<String>();
+        try(var con = connect();){
+            var statement = con.createStatement();
+            statement.execute("use nms;");
+            String query ;
+            if(!(credential.getString(METRIC_TYPE).equals("network"))){
+                 query = INSERT.replace("table","monitor").
+                        replace("columns","(IP_address,username,Password,Metric_type,Port) values (").
+                        replace("data","\""+credential.getString(IP_ADDRESS)+"\",\""+credential.getString(USERNAME)
+                                +"\",\""+credential.getString(PASSWORD)+"\",\""+credential.getString(METRIC_TYPE)+"\","+credential.getString(PORT)+")");
+            }else{
+                query = INSERT.replace("table","monitor").
+                        replace("columns","(IP_address,version,community,Metric_type,Port) values (").
+                        replace("data","\""+credential.getString(IP_ADDRESS)+"\",\""+credential.getString(VERSION)
+                                +"\",\""+credential.getString(COMMUNITY)+"\",\""+credential.getString(METRIC_TYPE)+"\","+credential.getString(PORT)+")");
+            }
+            statement.execute(query);
+            ResultSet rs = statement.executeQuery("Select Metric_group ,time from metric where Metric_type="+"\"" +credential.getString(METRIC_TYPE)+"\";");
+            ArrayList<String> queries= new ArrayList<>();
+            while(rs.next()){
+                String value =("insert into poller values(\""+generate()+"\",\""+credential.getString(IP_ADDRESS)+"\",\""+
+                        credential.getString(METRIC_TYPE)+"\",\"" +rs.getString(1)+"\","+rs.getInt(2)+",\"enable\");" );
+                queries.add(value);
+            }
+            queries.forEach( msg ->{
+                try {
+                    statement.execute(msg);
+                } catch (SQLException e) {
+                    error.add(e.getMessage());
+                    LOGGER.debug("Error in insertion in poller table");
+                }
+            });
+
+        }catch (Exception e){
+            error.add(e.getMessage());
+            LOGGER.info("Exception Occurred :"+e.getMessage());
+        }
+        if(!(error.isEmpty())){
+            credential.put(STATUS, UNSUCCESSFULL);
+            credential.put(ERROR,error);
+        }else{
+            credential.put(STATUS, SUCCESSFULL);
+        }
+
+   return credential;
     }
     private Future<JsonObject> verifyDatabase(){
        Promise<JsonObject> promise = Promise.promise();
@@ -130,10 +210,10 @@ public class DatabaseEngine extends AbstractVerticle {
             }
         }
         if(error.isEmpty()){
-            result.put("Status","Successful");
+            result.put(STATUS, SUCCESSFULL);
         }else{
-            result.put("Status","Unsuccessful");
-            result.put("Error",error);
+            result.put(STATUS, UNSUCCESSFULL);
+            result.put(ERROR,error);
         }
         promise.complete(result);
         return promise.future();
@@ -142,7 +222,7 @@ public class DatabaseEngine extends AbstractVerticle {
         var error = new ArrayList<String>();
         try ( var connect = connect()){
             var statement = connect.createStatement();
-            String available ="Select exists(Select * from monitor where IP_address= "+"\""+credential.getString("IP_Address")+"\");";
+            String available ="Select exists(Select * from monitor where IP_address= "+"\""+credential.getString(IP_ADDRESS)+"\");";
                 statement.execute("use nms;");
                 ResultSet resultSet = statement.executeQuery(available);
                 int value = 0;
@@ -153,16 +233,16 @@ public class DatabaseEngine extends AbstractVerticle {
                     error.add("IP already Discovered");
                     LOGGER.info("IP already discovered");
                 }else{
-                    LOGGER.info("IP not discovered");
+                    LOGGER.info("IP checked not available in database");
                 }
         }catch (Exception e){
             error.add(e.getMessage());
         }
         if(error.isEmpty()){
-            credential.put("Status","Successful");
+            credential.put(STATUS, SUCCESSFULL);
         }else{
-            credential.put("Status","Unsuccessful");
-            credential.put("Error",error);
+            credential.put(STATUS, UNSUCCESSFULL);
+            credential.put(ERROR,error);
         }
         return credential;
     }

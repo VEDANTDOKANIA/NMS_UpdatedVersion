@@ -1,8 +1,5 @@
 package com.mindarray;
 
-import io.vertx.core.buffer.Buffer;
-import io.vertx.core.file.AsyncFile;
-import io.vertx.core.file.OpenOptions;
 import io.vertx.core.json.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +14,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import static com.mindarray.Constant.*;
 
 public class Utils {
 
@@ -24,46 +22,46 @@ public class Utils {
     //validation
    public static JsonObject verifyCredential(JsonObject credentials) {
        var error = new ArrayList<String>();
-       if(!credentials.containsKey("IP_Address")){
+       if(!credentials.containsKey(IP_ADDRESS)){
            error.add("IP Address Not Found");
        }
-        if(!credentials.containsKey("Metric_Type")){
+        if(!credentials.containsKey(METRIC_TYPE)){
             error.add("Metric_Type not found");
         } else{
-            if(credentials.getString("Metric_Type").equals("linux")){
-                if(!credentials.containsKey("username"))
+            if(credentials.getString(METRIC_TYPE).equals("linux")){
+                if(!credentials.containsKey(USERNAME))
                 {
                    error.add("username not found");
-                }else if(!credentials.containsKey("password")){
+                }else if(!credentials.containsKey(PASSWORD)){
                     error.add("password column not found");
                 }
             }
-            else if(Objects.equals(credentials.getString("Metric_Type"), "windows")){
-                if(!credentials.containsKey("username"))
+            else if(Objects.equals(credentials.getString(METRIC_TYPE), "windows")){
+                if(!credentials.containsKey(USERNAME))
                 {
                     error.add("Username not found");
                 }
-                if(!credentials.containsKey("password")){
+                if(!credentials.containsKey(PASSWORD)){
                     error.add("Password not found");
                 }
             }
-            else if(Objects.equals(credentials.getString("Metric_Type"), "network")){
-                if(!credentials.containsKey("version"))
+            else if(Objects.equals(credentials.getString(METRIC_TYPE), "network")){
+                if(!credentials.containsKey(VERSION))
                 {
                    error.add("Version not found");
 
                 }
-                if(!credentials.containsKey("community")){
+                if(!credentials.containsKey(COMMUNITY)){
                     error.add("Community not found");
                 }
             }
         }
-       LOGGER.info(String.valueOf(error));
+
         if(error.isEmpty()){
-            credentials.put("Status","Successful");
+            credentials.put(STATUS, SUCCESSFULL);
         }else{
-            credentials.put("Status","Unsuccessful");
-            credentials.put("Error",error);
+            credentials.put(STATUS, UNSUCCESSFULL);
+            credentials.put(ERROR,error);
         }
 
        return credentials;
@@ -111,8 +109,7 @@ public class Utils {
             }
         }
         if(line == null){
-           result.put("Status","Unsucessful");
-           result.put("Error",error);
+           error.add("Unable to ping the device");
         }
         LOGGER.info(line);
         var pattern = Pattern.compile("%[a-zA-Z]+ = [0-9]\\/[0-9]\\/[0-9]%");
@@ -124,14 +121,20 @@ public class Utils {
             var matcher1 = pattern1.matcher(match);
             if(matcher1.find()){
                 if((matcher1.group(0).split("/")[1].split("%")[0]).equals("0")){
-                    result.put("Status","Successful");
+                    result.put(STATUS, UNSUCCESSFULL);
                 };
             }else{
-               result.put("Status","Unsuccessful");
+               error.add("High Latency. Unable to capture all 3 packages");
             }
         }else{
-            LOGGER.info("Discovery Match not found");
-            result.put("Status","Unsuccessful");
+            LOGGER.info("Unable to ping the device");
+            error.add("Unable to ping the device");
+        }
+        if(error.isEmpty()){
+            result.put(STATUS, SUCCESSFULL);
+        }else{
+            result.put(STATUS, UNSUCCESSFULL);
+            result.put(ERROR,error);
         }
        return result;
     }
@@ -142,7 +145,7 @@ public class Utils {
        BufferedReader reader = null;
        Process process = null;
        try {
-            process = new ProcessBuilder("Plugin.exe", encoder).start();
+            process = new ProcessBuilder("src/main/java/com/mindarray/plugin.exe", encoder).start();
            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
            String line;
            while ((line = reader.readLine()) != null) {
@@ -162,30 +165,30 @@ public class Utils {
            }
        }
        if(error.isEmpty()){
-           credential.put("Status","Successful");
+           credential.put(STATUS, SUCCESSFULL);
        }else{
-           credential.put("Status","Unsuccessful");
+           credential.put(STATUS, UNSUCCESSFULL);
        }
        return credential;
    }
    public static JsonObject checkPort(JsonObject credential){
        var error = new ArrayList<String>();
-       if(!(credential.containsKey("Port"))){
-           switch (credential.getString("Metric_Type")){
-               case "linux" :credential.put("Port",Constant.SSH_PORT);
+       if(!(credential.containsKey(PORT))){
+           switch (credential.getString(METRIC_TYPE)){
+               case "linux" :credential.put(PORT,Constant.SSH_PORT);
                              break;
-               case "windows" : credential.put("Port",Constant.WINRM_PORT);
+               case "windows" : credential.put(PORT,Constant.WINRM_PORT);
                                break;
-               case "network" : credential.put("Port",Constant.SNMP_PORT);
+               case "network" : credential.put(PORT,Constant.SNMP_PORT);
                                 break;
                default:  error.add("Wrong Metric Group given");
            }
        }
        if(error.isEmpty()){
-           credential.put("Status","Successful");
+           credential.put(STATUS, SUCCESSFULL);
        }else{
-           credential.put("Status","Unsuccessful");
-           credential.put("Error",error);
+           credential.put(STATUS, UNSUCCESSFULL);
+           credential.put(ERROR,error);
        }
        return credential;
    }
